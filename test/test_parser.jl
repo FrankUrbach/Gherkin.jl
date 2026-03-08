@@ -135,6 +135,67 @@
         @test contains(f.description, "that spans multiple lines")
     end
 
+    @testset "Star (*) step keyword" begin
+        content = """
+        Feature: Star steps
+          Scenario: Using star
+            * first step
+            * second step
+            Given a given step
+        """
+        f = parse_feature_string(content)
+        steps = f.scenarios[1].steps
+        @test length(steps) == 3
+        @test steps[1].keyword == StarKeyword
+        @test steps[1].text == "first step"
+        @test steps[2].keyword == StarKeyword
+        @test steps[3].keyword == GivenKeyword
+    end
+
+    @testset "Feature keyword aliases" begin
+        for kw in ("Ability:", "Business Need:")
+            content = """
+            $(kw) My feature
+              Scenario: A scenario
+                Given a step
+            """
+            f = parse_feature_string(content)
+            @test f.name == "My feature"
+            @test length(f.scenarios) == 1
+        end
+    end
+
+    @testset "Rule keyword (Gherkin 6)" begin
+        f = parse_feature(joinpath(fixtures, "rule.feature"))
+        @test f.name == "Rule keyword support"
+        @test f.background !== nothing
+
+        # Two Rule children
+        rules = [c for c in f.children if c isa Rule]
+        @test length(rules) == 2
+
+        r1 = rules[1]
+        @test r1.name == "Basic arithmetic"
+        @test r1.background !== nothing
+        @test length(r1.background.steps) == 1
+        @test length(r1.scenarios) == 2
+        @test r1.scenarios[1].name == "Addition"
+        @test r1.scenarios[2].name == "Subtraction"
+        @test r1.scenarios[2].tags[1].name == "slow"
+
+        r2 = rules[2]
+        @test r2.name == "Edge cases"
+        @test r2.background === nothing
+        @test length(r2.scenarios) == 1
+
+        # all_scenarios flattens rules
+        all_sc = all_scenarios(f)
+        @test length(all_sc) == 3
+
+        # top_level_scenarios returns only non-Rule scenarios
+        @test isempty(top_level_scenarios(f))
+    end
+
     @testset "And and But keywords" begin
         content = """
         Feature: And But test

@@ -13,7 +13,7 @@
         sc1 = Scenario("Adding two numbers",  "", Tag[], [s1, s2], 2)
         sc2 = Scenario("Subtracting numbers", "", Tag[], [s1, s2], 3)
         feat = Feature("calc.feature", "Basic calculator", "", Tag[], nothing,
-                       AbstractScenario[sc1, sc2], 1)
+                       FeatureChild[sc1, sc2], 1)
         sr1 = ScenarioResult(sc1, :pass,
                              [StepResult(s1, :pass, "", 10_000),
                               StepResult(s2, :pass, "", 10_000)], 20_000)
@@ -28,7 +28,7 @@
         step = _mock_step("a failing step")
         sc   = Scenario("Fails", "", Tag[], [step], 2)
         feat = Feature("fail.feature", "Failing", "", Tag[], nothing,
-                       AbstractScenario[sc], 1)
+                       FeatureChild[sc], 1)
         sr   = ScenarioResult(sc, :fail,
                               [StepResult(step, :fail, "intentional failure", 5_000)],
                               5_000)
@@ -41,7 +41,7 @@
         sc_pass = Scenario("Fast scenario",   "", [Tag("fast")], [step], 2)
         sc_skip = Scenario("Slow scenario",   "", [Tag("slow")], [step], 3)
         feat  = Feature("tagged.feature", "Tagged scenarios", "", [Tag("suite")], nothing,
-                        AbstractScenario[sc_pass, sc_skip], 1)
+                        FeatureChild[sc_pass, sc_skip], 1)
         sr_pass = ScenarioResult(sc_pass, :pass, [StepResult(step, :pass, "", 0)], 0)
         sr_skip = ScenarioResult(sc_skip, :skip, StepResult[], 0)
         fr   = FeatureResult(feat, [sr_pass, sr_skip], 0)
@@ -52,7 +52,7 @@
         step = _mock_step("a step with <special> & \"chars\"")
         sc   = Scenario("Uses <special> & characters", "", Tag[], [step], 2)
         feat = Feature("escape.feature", "XML & escaping", "", Tag[], nothing,
-                       AbstractScenario[sc], 1)
+                       FeatureChild[sc], 1)
         sr   = ScenarioResult(sc, :pass, [StepResult(step, :pass, "", 0)], 0)
         fr   = FeatureResult(feat, [sr], 0)
         RunResults([fr], 0)

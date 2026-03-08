@@ -52,34 +52,54 @@ passed(r::RunResults)     = all(passed, r.feature_results)
 
 # ─── Tag utilities ─────────────────────────────────────────────────────────────
 
-"""Return the effective tag set for a scenario (its own tags + feature-level tags)."""
-function _effective_tags(scenario::Scenario, feature::Feature) :: Set{String}
+"""
+Return the effective tag set for a scenario:
+  feature tags ∪ rule tags (if inside a Rule) ∪ scenario's own tags.
+"""
+function _effective_tags(scenario::Scenario, feature::Feature;
+                          rule::Union{Rule,Nothing} = nothing) :: Set{String}
     tags = Set{String}()
-    for t in feature.tags;   push!(tags, t.name); end
-    for t in scenario.tags;  push!(tags, t.name); end
+    for t in feature.tags;  push!(tags, t.name); end
+    if rule !== nothing
+        for t in rule.tags; push!(tags, t.name); end
+    end
+    for t in scenario.tags; push!(tags, t.name); end
     return tags
 end
 
 """
-Return true if the scenario passes the include/exclude tag filter.
+Build a tag-filter closure from the supplied parameters.
 
-- `include_tags` empty → all scenarios pass.
-- `include_tags` non-empty → scenario must have at least one listed tag.
-- `exclude_tags` non-empty → scenario must have none of the listed tags.
+Priority (highest first):
+1. `tags` — a boolean expression string (e.g. `"@smoke and not @wip"`);
+   parsed via `parse_tag_expr` / `eval_tag_expr`.
+2. `include_tags` / `exclude_tags` — simple allow/block lists (legacy).
+3. If all are empty/blank — every scenario passes (`TagAll` semantics).
+
+Returns `(eff::Set{String}) -> Bool`.
 """
-function _tag_filter_matches(scenario::Scenario, feature::Feature,
-                              include_tags::Vector{String},
-                              exclude_tags::Vector{String}) :: Bool
-    eff = _effective_tags(scenario, feature)
-    !isempty(include_tags) && !any(t -> t in eff, include_tags) && return false
-    !isempty(exclude_tags) &&  any(t -> t in eff, exclude_tags) && return false
-    return true
+function _build_tag_filter(include_tags::Vector{String},
+                            exclude_tags::Vector{String},
+                            tags::String) :: Function
+    if !isempty(strip(tags))
+        expr = parse_tag_expr(tags)
+        return (eff::Set{String}) -> eval_tag_expr(expr, eff)
+    elseif !isempty(include_tags) || !isempty(exclude_tags)
+        return function (eff::Set{String})
+            !isempty(include_tags) && !any(t -> t in eff, include_tags) && return false
+            !isempty(exclude_tags) &&  any(t -> t in eff, exclude_tags) && return false
+            return true
+        end
+    else
+        return (_::Set{String}) -> true
+    end
 end
 
 """Return true if the hook should run for the given scenario."""
-function _hook_applies(hook::HookDefinition, scenario::Scenario, feature::Feature) :: Bool
+function _hook_applies(hook::HookDefinition, scenario::Scenario, feature::Feature;
+                       rule::Union{Rule,Nothing} = nothing) :: Bool
     isempty(hook.tags) && return true
-    eff = _effective_tags(scenario, feature)
+    eff = _effective_tags(scenario, feature; rule=rule)
     return any(t -> t in eff, hook.tags)
 end
 
@@ -131,14 +151,23 @@ end
     expand_scenarios(feature::Feature) :: Vector{Scenario}
 
 Return all concrete Scenarios from the feature, expanding outlines.
+Flattens Rule blocks.
 """
 function expand_scenarios(feature::Feature) :: Vector{Scenario}
     result = Scenario[]
-    for sc in feature.scenarios
-        if sc isa Scenario
-            push!(result, sc)
-        elseif sc isa ScenarioOutline
-            append!(result, expand_outline(sc))
+    for child in feature.children
+        if child isa Scenario
+            push!(result, child)
+        elseif child isa ScenarioOutline
+            append!(result, expand_outline(child))
+        elseif child isa Rule
+            for sc in child.scenarios
+                if sc isa Scenario
+                    push!(result, sc)
+                elseif sc isa ScenarioOutline
+                    append!(result, expand_outline(sc))
+                end
+            end
         end
     end
     return result
@@ -192,24 +221,27 @@ end
 # ─── Scenario execution ───────────────────────────────────────────────────────
 
 """
-    run_scenario(scenario, background, registry; feature) :: ScenarioResult
+    run_scenario(scenario, backgrounds, registry; feature, rule) :: ScenarioResult
 
-Execute a single scenario (background steps first) and return the result.
-`feature` is used for tag-based hook filtering; defaults to a no-tag dummy.
+Execute a single scenario with zero or more background steps (chained) and
+return the result.  `backgrounds` is a `Vector{Background}` so that a
+feature-level background and a rule-level background can both be run in order.
+`feature` and `rule` are used for tag-based hook filtering.
 """
 function run_scenario(scenario::Scenario,
-                      background::Union{Background,Nothing},
+                      backgrounds::Vector{Background},
                       registry::StepRegistry;
-                      feature::Union{Feature,Nothing} = nothing) :: ScenarioResult
+                      feature::Union{Feature,Nothing} = nothing,
+                      rule::Union{Rule,Nothing}   = nothing) :: ScenarioResult
     t0 = time_ns()
     context = ScenarioContext()
 
     _feat = feature === nothing ?
-            Feature("", "", "", Tag[], nothing, AbstractScenario[], 0) : feature
+            Feature("", "", "", Tag[], nothing, FeatureChild[], 0) : feature
 
     # Run applicable @before hooks
     for hook in BEFORE_HOOKS
-        _hook_applies(hook, scenario, _feat) || continue
+        _hook_applies(hook, scenario, _feat; rule=rule) || continue
         try
             hook.fn(context)
         catch e
@@ -220,9 +252,9 @@ function run_scenario(scenario::Scenario,
     step_results = StepResult[]
     failed = false
 
-    # Background steps
-    if background !== nothing
-        for step in background.steps
+    # Background steps (feature-level first, then rule-level)
+    for bg in backgrounds
+        for step in bg.steps
             if failed
                 push!(step_results, StepResult(step, :skip, "", 0))
                 report_step_skipped(step)
@@ -248,7 +280,7 @@ function run_scenario(scenario::Scenario,
 
     # Run applicable @after hooks
     for hook in AFTER_HOOKS
-        _hook_applies(hook, scenario, _feat) || continue
+        _hook_applies(hook, scenario, _feat; rule=rule) || continue
         try
             hook.fn(context)
         catch e
@@ -260,45 +292,104 @@ function run_scenario(scenario::Scenario,
     return ScenarioResult(scenario, status, step_results, Int64(time_ns() - t0))
 end
 
+# Backward-compatible single-background overload
+function run_scenario(scenario::Scenario,
+                      background::Union{Background,Nothing},
+                      registry::StepRegistry;
+                      feature::Union{Feature,Nothing} = nothing,
+                      rule::Union{Rule,Nothing}       = nothing) :: ScenarioResult
+    bgs = background === nothing ? Background[] : [background]
+    return run_scenario(scenario, bgs, registry; feature=feature, rule=rule)
+end
+
+# ─── Internal helpers for feature/rule execution ──────────────────────────────
+
+"""Run all concrete scenarios that come from `sc` (expanding outlines as needed)."""
+function _run_abstract_scenario!(scenario_results::Vector{ScenarioResult},
+                                  sc::AbstractScenario,
+                                  backgrounds::Vector{Background},
+                                  feature::Feature,
+                                  rule::Union{Rule,Nothing},
+                                  registry::StepRegistry,
+                                  tag_filter::Function)
+    concrete = sc isa ScenarioOutline ? expand_outline(sc) : [sc]
+    for scenario in concrete
+        eff = _effective_tags(scenario, feature; rule=rule)
+        if !tag_filter(eff)
+            sr = ScenarioResult(scenario, :skip, StepResult[], 0)
+            push!(scenario_results, sr)
+            report_scenario_skipped(scenario)
+            continue
+        end
+
+        report_scenario_start(scenario)
+        sr_ref = Ref{ScenarioResult}()
+        Test.@testset "$(scenario.name)" begin
+            result = run_scenario(scenario, backgrounds, registry;
+                                  feature=feature, rule=rule)
+            sr_ref[] = result
+        end
+        push!(scenario_results, sr_ref[])
+        report_scenario_result(scenario, sr_ref[].status == :pass)
+    end
+end
+
+"""Run all scenarios inside a Rule block (with merged backgrounds)."""
+function _run_rule!(scenario_results::Vector{ScenarioResult},
+                    rule::Rule,
+                    feature::Feature,
+                    registry::StepRegistry,
+                    tag_filter::Function)
+    # Merge feature-level background + rule-level background
+    backgrounds = Background[]
+    feature.background !== nothing && push!(backgrounds, feature.background)
+    rule.background   !== nothing && push!(backgrounds, rule.background)
+
+    Test.@testset "Rule: $(rule.name)" begin
+        for sc in rule.scenarios
+            _run_abstract_scenario!(scenario_results, sc, backgrounds,
+                                    feature, rule, registry, tag_filter)
+        end
+    end
+end
+
 # ─── Feature execution ────────────────────────────────────────────────────────
 
 """
-    run_feature(feature, registry; include_tags, exclude_tags) :: FeatureResult
+    run_feature(feature, registry; include_tags, exclude_tags, tags) :: FeatureResult
 
 Run all (non-filtered) scenarios in a feature, wrapped in a Test.jl testset.
+Rule blocks are executed with nested testsets and their own (merged) background.
+
+# Tag filtering (pick one style)
+- `tags`         – boolean expression string: `"@smoke and not @wip"`
+- `include_tags` – simple allow-list (any match → include)
+- `exclude_tags` – simple block-list (any match → skip)
 """
 function run_feature(feature::Feature, registry::StepRegistry;
                      include_tags::Vector{String} = String[],
-                     exclude_tags::Vector{String} = String[]) :: FeatureResult
+                     exclude_tags::Vector{String} = String[],
+                     tags::String = "") :: FeatureResult
     t0 = time_ns()
+    tag_filter = _build_tag_filter(include_tags, exclude_tags, tags)
     report_feature_start(feature)
-    all_scenarios = expand_scenarios(feature)
     scenario_results = ScenarioResult[]
 
+    # Feature-level background (used for top-level scenarios; Rule execution merges its own)
+    feat_backgrounds = feature.background !== nothing ? [feature.background] : Background[]
+
     Test.@testset "$(feature.name)" begin
-        for scenario in all_scenarios
-            report_scenario_start(scenario)
-
-            # Tag filtering — skipped scenarios don't get a testset
-            if !_tag_filter_matches(scenario, feature, include_tags, exclude_tags)
-                sr = ScenarioResult(scenario, :skip, StepResult[], 0)
-                push!(scenario_results, sr)
-                report_scenario_skipped(scenario)
-                continue
+        for child in feature.children
+            if child isa Rule
+                _run_rule!(scenario_results, child, feature, registry, tag_filter)
+            elseif child isa AbstractScenario
+                _run_abstract_scenario!(scenario_results, child, feat_backgrounds,
+                                        feature, nothing, registry, tag_filter)
             end
-
-            sr_ref = Ref{ScenarioResult}()
-            Test.@testset "$(scenario.name)" begin
-                result = run_scenario(scenario, feature.background, registry;
-                                      feature=feature)
-                sr_ref[] = result
-            end
-            push!(scenario_results, sr_ref[])
-            report_scenario_result(scenario, sr_ref[].status == :pass)
         end
     end
 
-    total        = length(all_scenarios)
+    total        = length(scenario_results)
     passed_count = count(r -> r.status == :pass, scenario_results)
     report_feature_result(feature, passed_count, total)
 
@@ -308,7 +399,7 @@ end
 # ─── Full suite runner ────────────────────────────────────────────────────────
 
 """
-    runspec(; features_dir, steps_dir, include_tags, exclude_tags, junit_output) :: RunResults
+    runspec(; features_dir, steps_dir, include_tags, exclude_tags, tags, junit_output) :: RunResults
 
 Discover and run all feature files.
 
@@ -316,8 +407,9 @@ Discover and run all feature files.
 - `features_dir` – directory to search for `.feature` files (default: `"features"`)
 - `steps_dir`    – directory to `include()` step-definition `.jl` files from;
                    pass `nothing` to skip auto-loading (default: `"features/steps"`)
-- `include_tags` – run only scenarios that have at least one of these tags
-- `exclude_tags` – skip scenarios that have any of these tags
+- `tags`         – boolean tag expression string (e.g. `"@smoke and not @wip"`)
+- `include_tags` – run only scenarios that have at least one of these tags (legacy)
+- `exclude_tags` – skip scenarios that have any of these tags (legacy)
 - `junit_output` – write a JUnit XML report to this path (default: `nothing`)
 """
 function runspec(;
@@ -325,6 +417,7 @@ function runspec(;
     steps_dir::Union{String,Nothing} = joinpath("features", "steps"),
     include_tags::Vector{String}     = String[],
     exclude_tags::Vector{String}     = String[],
+    tags::String                     = "",
     junit_output::Union{String,Nothing} = nothing
 ) :: RunResults
 
@@ -359,7 +452,7 @@ function runspec(;
     for fp in feature_files
         feature = parse_feature(fp)
         result  = run_feature(feature, GLOBAL_REGISTRY;
-                              include_tags=include_tags, exclude_tags=exclude_tags)
+                              include_tags=include_tags, exclude_tags=exclude_tags, tags=tags)
         push!(feature_results, result)
     end
 

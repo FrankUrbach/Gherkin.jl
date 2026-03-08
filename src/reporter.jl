@@ -13,6 +13,7 @@ function _step_keyword_str(kw::StepKeyword)
     kw == ThenKeyword  && return "Then"
     kw == AndKeyword   && return "And"
     kw == ButKeyword   && return "But"
+    kw == StarKeyword  && return "*"
     return "Step"
 end
 

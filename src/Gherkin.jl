@@ -4,6 +4,7 @@ using Test
 using Dates
 
 include("ast.jl")
+include("tagexpr.jl")
 include("expressions.jl")
 include("context.jl")
 include("registry.jl")
@@ -49,8 +50,14 @@ end
 export
     # ── AST types ──────────────────────────────────────────────────────────────
     Feature, Scenario, ScenarioOutline, Background, Step, DocString, DataTable,
-    Tag, Examples, AbstractScenario,
+    Tag, Examples, Rule, FeatureChild, AbstractScenario,
     StepKeyword, GivenKeyword, WhenKeyword, ThenKeyword, AndKeyword, ButKeyword,
+    StarKeyword,
+    all_scenarios, top_level_scenarios,
+
+    # ── Tag expression ─────────────────────────────────────────────────────────
+    TagExpr, TagAll, TagLiteral, TagNot, TagAnd, TagOr,
+    parse_tag_expr, eval_tag_expr,
 
     # ── Parser ─────────────────────────────────────────────────────────────────
     parse_feature, parse_feature_string,
@@ -80,6 +87,7 @@ export
     # ── Runner ─────────────────────────────────────────────────────────────────
     runspec, run_feature, run_scenario,
     expand_outline, expand_scenarios,
+    report_run_summary,
 
     # ── JUnit XML ──────────────────────────────────────────────────────────────
     write_junit_xml,
