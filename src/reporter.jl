@@ -4,6 +4,7 @@ const ANSI_GREEN  = "\e[32m"
 const ANSI_RED    = "\e[31m"
 const ANSI_YELLOW = "\e[33m"
 const ANSI_CYAN   = "\e[36m"
+const ANSI_BOLD   = "\e[1m"
 const ANSI_RESET  = "\e[0m"
 
 function _step_keyword_str(kw::StepKeyword)
@@ -29,7 +30,9 @@ end
 function report_step_undefined(step::Step)
     kw = _step_keyword_str(step.keyword)
     println("  $(ANSI_YELLOW)?$(ANSI_RESET) $(kw) $(step.text)")
-    macro_name = kw == "Given" ? "@given" : kw == "When" ? "@when" : kw == "Then" ? "@then" : "@step"
+    macro_name = kw == "Given" ? "@given" :
+                 kw == "When"  ? "@when"  :
+                 kw == "Then"  ? "@then"  : "@step"
     println("    $(ANSI_YELLOW)Undefined step. Implement with:$(ANSI_RESET)")
     println("    $(ANSI_YELLOW)$(macro_name)(\"$(step.text)\") do context$(ANSI_RESET)")
     println("    $(ANSI_YELLOW)    # TODO$(ANSI_RESET)")
@@ -38,31 +41,43 @@ end
 
 function report_step_skipped(step::Step)
     kw = _step_keyword_str(step.keyword)
-    println("  $(ANSI_CYAN)-(ANSI_RESET) $(kw) $(step.text)")
+    println("  $(ANSI_CYAN)-$(ANSI_RESET) $(kw) $(step.text)")
 end
 
 function report_scenario_start(scenario::Scenario)
     println("\n  $(ANSI_CYAN)Scenario: $(scenario.name)$(ANSI_RESET)")
-end
-
-function report_scenario_result(scenario::Scenario, passed::Bool)
-    if passed
-        println("  $(ANSI_GREEN)PASSED$(ANSI_RESET): $(scenario.name)")
-    else
-        println("  $(ANSI_RED)FAILED$(ANSI_RESET): $(scenario.name)")
+    if !isempty(scenario.tags)
+        tag_str = join(["@$(t.name)" for t in scenario.tags], " ")
+        println("  $(ANSI_YELLOW)$(tag_str)$(ANSI_RESET)")
     end
 end
 
+function report_scenario_result(scenario::Scenario, passed::Bool)
+    color = passed ? ANSI_GREEN : ANSI_RED
+    label = passed ? "PASSED" : "FAILED"
+    println("  $(color)$(label)$(ANSI_RESET): $(scenario.name)")
+end
+
+function report_scenario_skipped(scenario::Scenario)
+    println("  $(ANSI_YELLOW)↷ SKIPPED$(ANSI_RESET): $(scenario.name)")
+end
+
 function report_feature_start(feature::Feature)
-    println("\n$(ANSI_CYAN)Feature: $(feature.name)$(ANSI_RESET)")
+    println("\n$(ANSI_BOLD)$(ANSI_CYAN)Feature: $(feature.name)$(ANSI_RESET)")
+    if !isempty(feature.tags)
+        tag_str = join(["@$(t.name)" for t in feature.tags], " ")
+        println("  $(ANSI_YELLOW)$(tag_str)$(ANSI_RESET)")
+    end
     if !isempty(feature.description)
         for line in split(feature.description, '\n')
-            println("  $(line)")
+            isempty(strip(line)) || println("  $(line)")
         end
     end
 end
 
 function report_feature_result(feature::Feature, passed::Int, total::Int)
-    color = passed == total ? ANSI_GREEN : ANSI_RED
+    color  = passed == total ? ANSI_GREEN : ANSI_RED
+    skipped = total - passed  # simplified (doesn't distinguish fail vs skip)
     println("\n$(color)$(passed)/$(total) scenarios passed$(ANSI_RESET) in Feature: $(feature.name)")
 end
+

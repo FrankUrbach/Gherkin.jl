@@ -8,7 +8,6 @@
         scenarios = expand_outline(outline)
         @test length(scenarios) == 3
 
-        # First expanded scenario
         sc1 = scenarios[1]
         @test sc1 isa Scenario
         @test contains(sc1.name, "Example 1")
@@ -16,12 +15,10 @@
         @test sc1.steps[2].text == "I add 1 and 2"
         @test sc1.steps[3].text == "the result is 3"
 
-        # Second
         sc2 = scenarios[2]
         @test sc2.steps[2].text == "I add 5 and 5"
         @test sc2.steps[3].text == "the result is 10"
 
-        # Third
         sc3 = scenarios[3]
         @test sc3.steps[2].text == "I add 0 and 0"
         @test sc3.steps[3].text == "the result is 0"
@@ -66,9 +63,8 @@
         @test_throws AmbiguousStep find_step(reg, "I do something")
     end
 
-    @testset "run_scenario with real steps" begin
+    @testset "run_scenario — result type and pass/fail" begin
         reg = StepRegistry()
-        # Calculator step definitions
         register!(reg, "a new calculator", function(ctx)
             ctx[:result] = 0
         end, "test:1")
@@ -86,38 +82,32 @@
         scenarios = expand_scenarios(f)
         @test length(scenarios) == 2
 
-        # Test first scenario
-        result = run_scenario(scenarios[1], f.background, reg)
-        @test result == true
+        r1 = run_scenario(scenarios[1], f.background, reg)
+        @test r1 isa ScenarioResult
+        @test r1.status == :pass
+        @test passed(r1)
+        @test r1.duration_ns >= 0
 
-        # Test second scenario
-        result2 = run_scenario(scenarios[2], f.background, reg)
-        @test result2 == true
+        r2 = run_scenario(scenarios[2], f.background, reg)
+        @test r2.status == :pass
     end
 
     @testset "run_scenario outline expansion" begin
         reg = StepRegistry()
-        register!(reg, "a new calculator", function(ctx)
-            ctx[:result] = 0
-        end, "test:1")
-        register!(reg, "I add {int} and {int}", function(ctx, a, b)
-            ctx[:result] = a + b
-        end, "test:2")
+        register!(reg, "a new calculator", (ctx) -> (ctx[:result] = 0), "t:1")
+        register!(reg, "I add {int} and {int}", (ctx, a, b) -> (ctx[:result] = a + b), "t:2")
         register!(reg, "the result is {int}", function(ctx, expected)
             @test ctx[:result] == expected
-        end, "test:3")
+        end, "t:3")
 
         f = parse_feature(joinpath(fixtures, "outline.feature"))
-        scenarios = expand_scenarios(f)
-        @test length(scenarios) == 3
-
-        for sc in scenarios
-            result = run_scenario(sc, f.background, reg)
-            @test result == true
+        for sc in expand_scenarios(f)
+            r = run_scenario(sc, f.background, reg)
+            @test r.status == :pass
         end
     end
 
-    @testset "Before and after hooks" begin
+    @testset "Before and after hooks — HookDefinition" begin
         reg = StepRegistry()
         register!(reg, "a step", (ctx) -> nothing, "test:1")
 
@@ -125,30 +115,29 @@
         before_fn = (ctx) -> push!(hook_log, "before")
         after_fn  = (ctx) -> push!(hook_log, "after")
 
-        # Use module-level hooks
         Gherkin.reset_hooks!()
-        push!(Gherkin.BEFORE_HOOKS, before_fn)
-        push!(Gherkin.AFTER_HOOKS, after_fn)
+        push!(Gherkin.BEFORE_HOOKS, HookDefinition(String[], before_fn, "test:0"))
+        push!(Gherkin.AFTER_HOOKS,  HookDefinition(String[], after_fn,  "test:0"))
 
-        scenario = Scenario("test", "", Tag[], [Step(GivenKeyword, "a step", nothing, nothing, 1)], 1)
-        run_scenario(scenario, nothing, reg)
-
+        scenario = Scenario("test", "", Tag[],
+                            [Step(GivenKeyword, "a step", nothing, nothing, 1)], 1)
+        r = run_scenario(scenario, nothing, reg)
+        @test r.status == :pass
         @test hook_log == ["before", "after"]
         Gherkin.reset_hooks!()
     end
 
     @testset "Step with docstring is passed extra arg" begin
         reg = StepRegistry()
-        received_docstring = Ref{Union{DocString, Nothing}}(nothing)
+        received_docstring = Ref{Union{DocString,Nothing}}(nothing)
         register!(reg, "a step with content", function(ctx, ds::DocString)
             received_docstring[] = ds
         end, "test:1")
         register!(reg, "it should work", (ctx) -> nothing, "test:2")
 
         f = parse_feature(joinpath(fixtures, "docstrings.feature"))
-        scenarios = expand_scenarios(f)
-        result = run_scenario(scenarios[1], f.background, reg)
-        @test result == true
+        r = run_scenario(expand_scenarios(f)[1], f.background, reg)
+        @test r.status == :pass
         @test received_docstring[] !== nothing
         @test received_docstring[].content_type == "json"
         @test contains(received_docstring[].content, "\"key\": \"value\"")
@@ -156,7 +145,7 @@
 
     @testset "Step with data table is passed extra arg" begin
         reg = StepRegistry()
-        received_table = Ref{Union{DataTable, Nothing}}(nothing)
+        received_table = Ref{Union{DataTable,Nothing}}(nothing)
         register!(reg, "the following users:", function(ctx, tbl::DataTable)
             received_table[] = tbl
         end, "test:1")
@@ -165,9 +154,8 @@
         end, "test:2")
 
         f = parse_feature(joinpath(fixtures, "datatable.feature"))
-        scenarios = expand_scenarios(f)
-        result = run_scenario(scenarios[1], f.background, reg)
-        @test result == true
+        r = run_scenario(expand_scenarios(f)[1], f.background, reg)
+        @test r.status == :pass
         @test received_table[] !== nothing
         @test received_table[][1] == ["name", "age"]
         @test length(received_table[]) == 3
