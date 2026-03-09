@@ -3,6 +3,7 @@
 A complete Gherkin/BDD test runner for Julia, similar to Cucumber.
 
 [![Julia](https://img.shields.io/badge/Julia-1.9+-blue.svg)](https://julialang.org)
+[![CI](https://github.com/FrankUrbach/Gherkin.jl/actions/workflows/ci.yml/badge.svg)](https://github.com/FrankUrbach/Gherkin.jl/actions/workflows/ci.yml)
 
 ## Features
 
